@@ -24,10 +24,97 @@ fn map_mcap<P: AsRef<Utf8Path>>(p: P) -> Result<Mmap> {
     unsafe { Mmap::map(&fd) }.context("Couldn't map MCAP file")
 }
 
-fn read_it() -> Result<()> {
-    let args: Vec<String> = env::args().collect();
+fn get_help_msg() -> String {
+    let options = vec![
+        ("-i, --input <FILE>", "Input MCAP file path (required)"),
+        ("-o, --output <FILE>", "Output MCAP file path (default: compressed_video.mcap)"),
+        ("--silent", "Disable verbose output. Errors and build logs will still be printed."),
+        ("--warm-up", "Warm up the Rust environment and exit (for CI/Docker)"),
+        ("-h, --help", "Show this help message"),
+    ];
 
-    let mapped = map_mcap(&args[1])?;
+    // Find the longest option string for alignment
+    let max_option_len = options.iter()
+        .map(|(opt, _)| opt.len())
+        .max()
+        .unwrap_or(0);
+
+    // Build the help message with aligned options
+    let mut help_msg = String::from("mcap-videoify - Convert MCAP files containing image data to compressed video\n\n");
+    help_msg.push_str("Usage:\n");
+    help_msg.push_str("  mcap-videoify [OPTIONS]\n\n");
+    help_msg.push_str("Options:\n");
+
+    for (opt, desc) in options {
+        help_msg.push_str(&format!("  {:<width$}  {}\n", opt, desc, width = max_option_len));
+    }
+
+    help_msg.push_str("\nDescription:\n");
+    help_msg.push_str("  This tool processes MCAP files containing image data and converts them to\n");
+    help_msg.push_str("  compressed H.264 video streams. It preserves the original message timing\n");
+    help_msg.push_str("  and metadata while significantly reducing file size through video compression.");
+
+    help_msg
+}
+
+
+fn print_help() {
+    println!("{}", get_help_msg());
+}
+
+
+fn read_it(output_path: &str) -> Result<()> {
+    let args: Vec<String> = env::args().collect();
+    let mut input_path = None;
+    let mut output_path = output_path.to_string();
+    let mut silent = false;
+    let mut warmup = false;
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--input" | "-i" => {
+                if i + 1 < args.len() {
+                    input_path = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    anyhow::bail!("Missing value for --input/-i argument");
+                }
+            }
+            "--output" | "-o" => {
+                if i + 1 < args.len() {
+                    output_path = args[i + 1].clone();
+                    i += 2;
+                } else {
+                    anyhow::bail!("Missing value for --output/-o argument");
+                }
+            }
+            "--silent" => {
+                silent = true;
+                i += 1;
+            }
+            "--warm-up" => {
+                warmup = true;
+                i += 1;
+            }
+            "--help" | "-h" => {
+                print_help();
+                std::process::exit(0);
+            }
+            _ => {
+                anyhow::bail!("Unexpected argument: {}. \n\n {}", args[i], get_help_msg());
+            }
+        }
+    }
+
+    // Warm up sequence. Intended for CI & Docker builds.
+    if warmup {
+        println!("mcap-videoify and underlying rust environment has been warmed up.");
+        std::process::exit(0);
+    }
+
+    let input_path = input_path.ok_or_else(|| anyhow::anyhow!("No input file specified. Use --input/-i to specify input file"))?;
+    let mapped = map_mcap(&input_path)?;
 
     let mut set = FileDescriptorSet::new();
     set.file
@@ -52,7 +139,7 @@ fn read_it() -> Result<()> {
     let mut encoders_by_topic: HashMap<String, Encoder> = HashMap::new();
 
     let mut video_mcap = mcap::Writer::new(BufWriter::new(
-        File::create("compressed_video.mcap").unwrap(),
+        File::create(&output_path).unwrap(),
     ))
     .unwrap();
 
@@ -74,7 +161,11 @@ fn read_it() -> Result<()> {
 
         let parsed = msg.parse_from_bytes(&full_message.data)?;
 
-        println!("{:?}", msg);
+        // Only print the message if not silent
+        if !silent {
+            println!("{:?}", msg);
+        }
+
         let timestamp = msg
             .field_by_name("timestamp")
             .unwrap()
@@ -166,5 +257,8 @@ fn read_it() -> Result<()> {
 }
 
 fn main() {
-    read_it().unwrap();
+    if let Err(e) = read_it("compressed_video.mcap") {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
+    }
 }
