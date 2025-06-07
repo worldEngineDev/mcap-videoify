@@ -147,7 +147,13 @@ fn read_it(output_path: &str) -> Result<()> {
         let full_message = message.unwrap();
         let schema = full_message.channel.schema.as_ref().unwrap().clone();
 
+        // For other messages, write them as-is
         if schema.name.ne("foxglove.CompressedImage") || schema.encoding.ne("protobuf") {
+            if !silent {
+                println!("Leaving message as-is: {:?}", schema.name);
+            }
+            // Write the message as-is to the output MCAP
+            video_mcap.write(&full_message).unwrap();
             continue;
         }
 
@@ -198,6 +204,7 @@ fn read_it(output_path: &str) -> Result<()> {
             // fixme - command line argument for bitrate
             let config =
                 EncoderConfig::new(rgb8.width(), rgb8.height()).set_bitrate_bps(10_000_000);
+            
             return Encoder::with_config(config).unwrap();
         });
          
